@@ -6,3 +6,5 @@ move_files_Exo??????.py - the code to move CropReporter files into one experimen
 
 
 arabidopsis_tray_pipeline/ - image analysis of small plants (e.g. Arabidopsis) in 5 x 4 trays from the raw CropReporter files: per-plant growth, chlorophyll-fluorescence, spectral and color traits per imaging round, QC overlays, and an R Markdown template for treatment-vs-control statistics. See arabidopsis_tray_pipeline/README.md and SOP.md.
+
+raw_roi_pipeline/ - opens raw CropReporter files of any layout without the vendor software; regions drawn in roi_editor.html; fluorescence, spectral and color traits per region, plus per-pixel trait maps. See raw_roi_pipeline/README.md.

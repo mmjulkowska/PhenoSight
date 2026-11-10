@@ -1,0 +1,8 @@
+numpy
+scipy
+scikit-image
+pandas
+pillow
+matplotlib
+tifffile
+# optional: imagecodecs (LZW-compressed TIFFs)

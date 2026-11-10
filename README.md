@@ -16,6 +16,7 @@ Facility director: Magdalena M. Julkowska (mmj55@cornell.edu).
 | Folder | What it holds |
 | --- | --- |
 | [`code/arabidopsis_tray_pipeline/`](code/arabidopsis_tray_pipeline/) | Image analysis of small plants in 5 × 4 trays (e.g. Arabidopsis) from the raw CropReporter files: pot grid, plant masks that follow each pot through time, growth, chlorophyll-fluorescence, spectral and color traits per plant per imaging round, QC overlays, and an R Markdown template that compares each treatment level with its control. |
+| [`code/raw_roi_pipeline/`](code/raw_roi_pipeline/) | Opens raw CropReporter files of any layout without the vendor software: plant mask from chlorophyll fluorescence, regions drawn in a browser-based ROI editor (one per pot or plant), the full fluorescence, spectral and color trait set per region, and per-pixel trait maps for figures and Fiji. |
 | [`code/`](code/) | Scripts for organizing raw CropReporter and RGB camera files into one folder per experiment. |
 | [`3D printed accessories/`](3D%20printed%20accessories/) | STL files for adapter rings that hold pots of different sizes (inner diameter 89, 113 and 135 mm) in the imaging trays. |
 
