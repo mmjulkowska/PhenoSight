@@ -4,3 +4,5 @@ RGB_Data_Exp??????.py - the code to move the files made by RGB/CF camera from in
 
 move_files_Exo??????.py - the code to move CropReporter files into one experimental folder for analysis through PlantCV and/or PhenoVation DataAnalysis reporter
 
+
+arabidopsis_tray_pipeline/ - image analysis of small plants (e.g. Arabidopsis) in 5 x 4 trays from the raw CropReporter files: per-plant growth, chlorophyll-fluorescence, spectral and color traits per imaging round, QC overlays, and an R Markdown template for treatment-vs-control statistics. See arabidopsis_tray_pipeline/README.md and SOP.md.

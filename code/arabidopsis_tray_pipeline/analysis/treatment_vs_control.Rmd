@@ -1,0 +1,297 @@
+---
+title: "`r params$exp_id` — each treatment level against its control"
+author: "PhenoSight Plant Phenotyping Facility, Boyce Thompson Institute"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  exp_id:      "EXP00000"
+  pipe_dir:    "aph_output"          # output folder of phenosight_aph.py (pots.csv, images.csv)
+  out_dir:     "results"             # tables and figures are written here
+  layout:      "layout.csv"          # one row per pot: TrayID, Area, Treatment (csv, or xlsx sheet 1)
+  coding:      "coding.csv"          # one row per treatment: Treatment, Label, Series, Level, Role
+  min_fluo_px: 20                    # fluorescence traits need >= this many Fm-valid pixels
+  end_days:    3                     # end of trial = each plant's mean over the final N days
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 11, fig.height = 6, dpi = 110)
+library(data.table); library(ggplot2); library(cowplot); library(scales); library(readxl)
+OUT <- params$out_dir; FIGDIR <- file.path(OUT, "figures")
+dir.create(FIGDIR, showWarnings = FALSE, recursive = TRUE)
+PFX <- params$exp_id
+```
+
+# What this notebook does
+
+Each treatment level is compared **on its own** with the control grown under the same
+conditions:
+
+- **Test:** Welch's *t*-test at every imaging round, and on each plant's mean over the final
+  `r params$end_days` days (end of trial).
+- **Effect size:** Cohen's *d* (treated − control, pooled SD) and % difference.
+- **Correction:** Benjamini–Hochberg across the treatment levels, within each trait and round.
+- **References** (for example a well-watered control) are compared with the control the same
+  way, as single, unadjusted contrasts.
+- **Figures:** one file per series (for example a product) per trait, the levels side by side,
+  each against the control, with a −log10(p~BH~) strip and a Cohen's *d* strip.
+
+The tests use the measured imaging rounds. This is appropriate when all trays are imaged
+within a short window in every round; if rounds are not synchronized across trays, smooth
+each plant's time course onto a common time grid first.
+
+## Input files
+
+- **`layout`**: one row per pot, with `TrayID` (Tray01, Tray02, …), `Area` (A1…E4, as seen
+  from the chamber door: A1 upper left, E4 lower right) and `Treatment` (a column named
+  `PlantName` is accepted too).
+- **`coding`**: one row per treatment code, with
+  - `Treatment`: the code used in the layout;
+  - `Label`: the name shown in tables and figures;
+  - `Series`: the group that shares a figure (for example a product); empty for controls;
+  - `Level`: a number that orders the levels within a series (for example the rate);
+  - `Role`: `treatment`, `control` (exactly one) or `reference`.
+
+# Data
+
+```{r read}
+pots <- fread(file.path(params$pipe_dir, "pots.csv"))
+imgs <- fread(file.path(params$pipe_dir, "images.csv"))
+bad <- imgs[qc_grid_weak == TRUE, file]; bad          # e.g. a tray not under the camera
+pots <- pots[!file %in% bad]
+imgs[, .(images = .N, with_PMT = sum(has_pmt), with_SPC = sum(has_spc), with_CLR = sum(has_clr))]
+
+lay <- if (grepl("\\.xlsx?$", params$layout)) as.data.table(read_excel(params$layout, sheet = 1)) else fread(params$layout)
+if (!"Treatment" %in% names(lay) && "PlantName" %in% names(lay)) setnames(lay, "PlantName", "Treatment")
+lay <- lay[!is.na(TrayID), .(TrayID, Area, Treatment)]
+cod <- fread(params$coding, encoding = "UTF-8")
+stopifnot(all(c("Treatment", "Label", "Series", "Level", "Role") %in% names(cod)),
+          sum(cod$Role == "control") == 1, all(lay$Treatment %in% cod$Treatment))
+CONTROL <- cod[Role == "control", Label]
+REFS    <- cod[Role == "reference", Label]
+
+# balance check: pots per treatment and per position
+bal <- dcast(lay[, .N, by = .(Treatment, Area)], Treatment ~ Area, value.var = "N", fill = 0)
+lay[, .N, by = Treatment][order(Treatment)]
+stopifnot(!anyDuplicated(lay[, .(TrayID, Area)]))
+
+dat <- merge(pots, lay, by = c("TrayID", "Area"))
+dat <- merge(dat, cod[, .(Treatment, Group = Label, Series, Level, Role)], by = "Treatment")
+dat[, plant.ID := paste0(TrayID, "_", Area)]
+t0 <- min(dat$datetime)
+rt <- dat[, .(round_time = min(datetime)), by = round][, Day := as.numeric(difftime(round_time, t0, units = "days"))]
+dat <- merge(dat, rt[, .(round, Day)], by = "round")
+
+# counts: compare with the layout (pots minus empty pots)
+c(trays = uniqueN(dat$TrayID), plants = uniqueN(dat$plant.ID), layout_pots = nrow(lay),
+  rounds = uniqueN(dat$round), empty_pots = uniqueN(dat[pot_status == "empty", plant.ID]))
+```
+
+## Traits and QC
+
+Fluorescence traits are dropped for a pot-round with fewer than `r params$min_fluo_px`
+Fm-valid pixels, and every trait is dropped once a pot has no plant (area 0).
+
+```{r traits}
+TRAITS <- c(area_mm2 = "Rosette area (mm²)", hull_mm2 = "Convex hull area (mm²)", solidity = "Solidity",
+            Fv_Fm = "Fv/Fm", Fq_Fm = "Fq'/Fm'", NPQ = "NPQ", qP = "qP", qN = "qN", qL = "qL",
+            phiNO = "ϕNO", phiNPQ = "ϕNPQ", npq_t = "npq(t)",
+            ChlIdx = "ChlIdx", AriIdx = "AriIdx", NDVI = "NDVI", Hue = "Hue (°)", GreenIdx = "Green index")
+FLUO <- c("Fv_Fm", "Fq_Fm", "NPQ", "qP", "qN", "qL", "phiNO", "phiNPQ", "npq_t")
+dat[, hull_mm2 := hull_cellfrac * area_mm2 / pmax(area_cellfrac, 1e-9)]
+for (tr in FLUO) dat[n_px_fluo < params$min_fluo_px | is.na(n_px_fluo), (tr) := NA_real_]
+for (tr in names(TRAITS)) dat[area_mm2 <= 0, (tr) := NA_real_]
+long <- data.table::melt(dat, id.vars = c("plant.ID", "TrayID", "Area", "Group", "Series", "Level", "Role", "round", "Day"),
+                         measure.vars = names(TRAITS), variable.name = "trait", value.name = "y",
+                         variable.factor = FALSE)
+long <- long[is.finite(y)]
+long[trait == "area_mm2", .(plants = uniqueN(plant.ID)), by = .(Role, Group)][order(Role, Group)]
+```
+
+# Tests
+
+```{r stats}
+cohen_d <- function(x, y) {
+  nx <- length(x); ny <- length(y)
+  if (nx < 2 || ny < 2) return(NA_real_)
+  sp <- sqrt(((nx - 1) * var(x) + (ny - 1) * var(y)) / (nx + ny - 2))
+  if (!is.finite(sp) || sp == 0) return(NA_real_)
+  (mean(x) - mean(y)) / sp
+}
+test_vs <- function(x, y) {
+  if (length(x) < 3 || length(y) < 3) return(NULL)
+  list(n_trt = length(x), n_ctrl = length(y), mean_trt = mean(x), mean_ctrl = mean(y),
+       pct = 100 * (mean(x) - mean(y)) / mean(y),
+       p = tryCatch(t.test(x, y)$p.value, error = function(e) NA_real_), d = cohen_d(x, y))
+}
+LEVELS <- cod[Role == "treatment", Label]
+run_tests <- function(d, by) {
+  rbindlist(lapply(c(LEVELS, REFS), function(g)
+    d[, { r <- test_vs(y[Group == g], y[Group == CONTROL])
+          if (is.null(r)) NULL else c(list(Group = g), r) }, by = by]))
+}
+per_round <- run_tests(long, by = c("trait", "round", "Day"))
+per_round[Group %in% LEVELS, p_BH := p.adjust(p, "BH"), by = .(trait, round)]
+per_round[Group %in% REFS, p_BH := p]                      # single contrasts, not in the family
+
+last_day <- max(long$Day)
+endp <- long[Day >= last_day - params$end_days, .(y = mean(y), rounds = .N),
+             by = .(plant.ID, TrayID, Area, Group, Series, Level, Role, trait)]
+endpoint <- run_tests(endp, by = "trait")
+endpoint[Group %in% LEVELS, p_BH := p.adjust(p, "BH"), by = trait]
+endpoint[Group %in% REFS, p_BH := p]
+
+fwrite(per_round, file.path(OUT, paste0(PFX, "_per_round_vs_control.csv")))
+c(rounds = uniqueN(per_round$round),
+  endpoint_rounds = paste(sort(unique(long[Day >= last_day - params$end_days, round])), collapse = ", "))
+```
+
+# 1. References against the control
+
+```{r references}
+if (length(REFS)) {
+  cntR <- per_round[Group %in% REFS, .(n_sig = sum(p < 0.05, na.rm = TRUE), n_rounds = .N), by = .(trait, Group)]
+  tabR <- merge(endpoint[Group %in% REFS], cntR, by = c("trait", "Group"))
+  tabR <- tabR[order(Group, match(trait, names(TRAITS)))][
+    , .(reference = Group, trait = TRAITS[trait], control = signif(mean_ctrl, 3), reference_mean = signif(mean_trt, 3),
+        pct = round(pct, 1), d = round(d, 2), p = signif(p, 2), rounds_sig = paste0(n_sig, " of ", n_rounds))]
+  fwrite(tabR, file.path(OUT, paste0(PFX, "_references_vs_control.csv")))
+  knitr::kable(tabR)
+}
+```
+
+# 2. Each treatment level against the control
+
+## End of trial
+
+Cohen's *d* at the end for every level and trait. Asterisks mark p~BH~ at the end; the number
+in brackets is the number of rounds with p~BH~ < 0.05.
+
+```{r endpoint, fig.width = 13, fig.height = 9}
+cnt <- per_round[Group %in% LEVELS, .(n_sig = sum(p_BH < 0.05, na.rm = TRUE), n_rounds = .N), by = .(trait, Group)]
+endtab <- merge(endpoint[Group %in% LEVELS], cnt, by = c("trait", "Group"))
+SERIES <- unique(cod[Role == "treatment", Series])
+LEVS <- cod[Role == "treatment"][order(match(Series, SERIES), Level), Label]
+endtab <- merge(endtab, cod[, .(Group = Label, Series)], by = "Group")
+endtab[, Series := factor(Series, SERIES)]
+endtab[, Group := factor(Group, rev(LEVS))]
+endtab[, trait_lab := factor(TRAITS[trait], TRAITS)]
+endtab[, star := fifelse(p_BH < .001, "***", fifelse(p_BH < .01, "**", fifelse(p_BH < .05, "*", "")))]
+p_hm <- ggplot(endtab, aes(trait_lab, Group, fill = pmax(pmin(d, 2), -2))) +
+  geom_tile(colour = "white", linewidth = .6) +
+  geom_text(aes(label = paste0(star, "\n(", n_sig, ")")), size = 2.4, lineheight = .8) +
+  scale_fill_gradient2(low = "#B2182B", mid = "white", high = "#2166AC", midpoint = 0, limits = c(-2, 2),
+                       name = "Cohen's d\n(treated − control)") +
+  facet_grid(Series ~ ., scales = "free_y", space = "free_y") +
+  labs(title = sprintf("Each level vs %s, mean of the final %d days", CONTROL, params$end_days),
+       subtitle = sprintf("* p(BH) < 0.05   ** < 0.01   *** < 0.001; (n) = rounds with p(BH) < 0.05, of %d; blue = higher than control",
+                          uniqueN(per_round$round)), x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid = element_blank(),
+        strip.text.y = element_text(face = "bold"), plot.title = element_text(face = "bold"))
+cairo_pdf(file.path(FIGDIR, paste0(PFX, "_effectsize_heatmap.pdf")), 13, 9); print(p_hm); dev.off()
+p_hm
+
+full <- endtab[order(Series, match(as.character(Group), LEVS), match(trait, names(TRAITS)))][
+  , .(series = Series, level = as.character(Group), trait = TRAITS[trait], n_trt, n_ctrl,
+      mean_trt = signif(mean_trt, 4), mean_ctrl = signif(mean_ctrl, 4), pct = round(pct, 1),
+      d = round(d, 2), p = signif(p, 3), p_BH = signif(p_BH, 3), rounds_sig = paste0(n_sig, " of ", n_rounds))]
+fwrite(full, file.path(OUT, paste0(PFX, "_endpoint_vs_control.csv")))
+knitr::kable(full[p_BH < 0.05 | as.integer(sub(" of.*", "", rounds_sig)) >= 5][order(trait, -abs(d))])
+```
+
+## Time courses — one file per series per trait
+
+Faint lines are individual plants; ribbons are mean ± SE. The −log10(p~BH~) strip has a dashed
+line at p~BH~ = 0.05; the Cohen's *d* strip is green when the treated plants are higher.
+Fluorescence and spectral traits differ between pre-dawn and evening rounds; every comparison
+is made within one round.
+
+```{r figures, results = "hide"}
+COL <- c(Control = "grey40", Treated = "#1F77B4", Reference = "#9467BD")
+base_theme <- theme_bw(base_size = 10) +
+  theme(panel.grid.minor = element_blank(),
+        strip.background = element_rect(fill = "grey93", colour = NA),
+        strip.text = element_text(face = "bold", size = 8.5, margin = margin(2.5, 2, 2.5, 2)),
+        legend.position = "top", legend.title = element_blank(),
+        axis.title.y = element_text(size = 9),
+        plot.title = element_text(face = "bold", size = 12),
+        plot.subtitle = element_text(size = 8.5, colour = "grey30"))
+
+make_fig <- function(comps, tt, title) {
+  is_ref <- all(comps %in% REFS)
+  lng <- rbindlist(lapply(comps, function(g) {
+    tr <- long[trait == tt & Group == g, .(plant.ID, Day, y)]
+    ct <- long[trait == tt & Group == CONTROL, .(plant.ID, Day, y)]
+    rbind(cbind(ct, comp = g, Condition = "Control"),
+          cbind(tr, comp = g, Condition = if (is_ref) "Reference" else "Treated"))
+  }))
+  lab <- setNames(sapply(comps, function(g) sprintf("%s   (n = %d vs %d)", g,
+           uniqueN(lng[comp == g & Condition != "Control", plant.ID]), uniqueN(lng[comp == g & Condition == "Control", plant.ID]))), comps)
+  lng[, comp := factor(comp, comps, lab[comps])]
+  lng[, Condition := factor(Condition, intersect(names(COL), unique(Condition)))]
+  summ <- lng[, .(m = mean(y), se = sd(y) / sqrt(.N)), by = .(comp, Condition, Day)]
+  rg <- per_round[trait == tt & Group %in% comps]
+  rg[, comp := factor(Group, comps, lab[comps])]
+  rg[, lod := -log10(if (is_ref) p else p_BH)]
+  rg[, sig := lod > -log10(0.05)]
+  yl <- range(c(summ$m - summ$se, summ$m + summ$se), na.rm = TRUE); pad <- diff(yl) * .45
+  yl <- c(max(min(lng$y), yl[1] - pad), min(max(lng$y), yl[2] + pad))
+  p1 <- ggplot(lng, aes(Day, y)) +
+    geom_line(aes(group = plant.ID, colour = Condition), alpha = .09, linewidth = .22) +
+    geom_ribbon(data = summ, aes(y = m, ymin = m - se, ymax = m + se, fill = Condition), alpha = .4, colour = NA) +
+    geom_line(data = summ, aes(y = m, colour = Condition), linewidth = .85) +
+    scale_colour_manual(values = COL) + scale_fill_manual(values = COL) +
+    coord_cartesian(ylim = yl) + facet_wrap(~comp, nrow = 1) +
+    labs(y = TRAITS[[tt]], x = NULL, title = paste0(PFX, "  ·  ", title, "  ·  ", TRAITS[[tt]]),
+         subtitle = paste0("Each panel against ", CONTROL, ", Welch t-test at every imaging round; mean ± SE.")) +
+    base_theme
+  p2 <- ggplot(rg, aes(Day, lod)) +
+    geom_hline(yintercept = -log10(.05), linetype = "dashed", colour = "firebrick", linewidth = .35) +
+    geom_line(colour = "grey35", linewidth = .45) + geom_point(aes(colour = sig), size = .85) +
+    scale_colour_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey60"), guide = "none") +
+    facet_wrap(~comp, nrow = 1) +
+    labs(y = if (is_ref) expression(-log[10] * "(p)") else expression(-log[10] * "(p"[BH] * ")"), x = NULL) +
+    base_theme + theme(strip.text = element_blank(), strip.background = element_blank())
+  p3 <- ggplot(rg, aes(Day, d)) +
+    geom_hline(yintercept = 0, colour = "grey35", linewidth = .35) +
+    geom_hline(yintercept = c(-.8, .8), linetype = "dashed", colour = "grey72", linewidth = .3) +
+    geom_col(aes(fill = d > 0), width = .3) +
+    scale_fill_manual(values = c(`TRUE` = "#2CA02C", `FALSE` = "#D62728"), guide = "none") +
+    facet_wrap(~comp, nrow = 1) +
+    labs(y = "Cohen's d\n(treated − control)", x = "Days after start of imaging") +
+    base_theme + theme(strip.text = element_blank(), strip.background = element_blank())
+  plot_grid(p1, p2, p3, ncol = 1, align = "v", axis = "lr", rel_heights = c(4.4, 1.35, 1.55))
+}
+
+for (ss in SERIES) {
+  comps <- cod[Role == "treatment" & Series == ss][order(Level), Label]
+  sdir <- gsub("[^A-Za-z0-9_-]", "_", ss); dir.create(file.path(FIGDIR, sdir), showWarnings = FALSE)
+  for (tt in names(TRAITS)) {
+    cairo_pdf(file.path(FIGDIR, sdir, sprintf("%s_%s_%s.pdf", PFX, sdir, tt)), width = 4.3 * length(comps) + 0.5, height = 7.3)
+    print(make_fig(comps, tt, ss)); dev.off()
+  }
+}
+if (length(REFS)) {
+  dir.create(file.path(FIGDIR, "References"), showWarnings = FALSE)
+  for (tt in names(TRAITS)) {
+    cairo_pdf(file.path(FIGDIR, "References", sprintf("%s_references_%s.pdf", PFX, tt)), width = 4.3 * length(REFS) + 2.7, height = 7.3)
+    print(make_fig(REFS, tt, "References")); dev.off()
+  }
+}
+```
+
+An example figure (first series, rosette area):
+
+```{r example, fig.width = 21.5, fig.height = 7.3}
+make_fig(cod[Role == "treatment" & Series == SERIES[1]][order(Level), Label], "area_mm2", SERIES[1])
+```
+
+# Export
+
+```{r export}
+fwrite(endp, file.path(OUT, paste0(PFX, "_endpoint_per_plant.csv")))
+fwrite(dat, file.path(OUT, paste0(PFX, "_pots_annotated.csv")))
+```

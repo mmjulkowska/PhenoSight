@@ -1,0 +1,11 @@
+Treatment,Label,Series,Level,Role
+T01,ProductA 1 g/L,ProductA,1,treatment
+T02,ProductA 2 g/L,ProductA,2,treatment
+T03,ProductA 4 g/L,ProductA,4,treatment
+T04,ProductA 8 g/L,ProductA,8,treatment
+T05,ProductB 1 g/L,ProductB,1,treatment
+T06,ProductB 2 g/L,ProductB,2,treatment
+T07,ProductB 4 g/L,ProductB,4,treatment
+T08,ProductB 8 g/L,ProductB,8,treatment
+T09,Mock,,,control
+T10,Mock well-watered,,,reference
