@@ -8,6 +8,10 @@ It replaces the ROI and mask step of the vendor software for this type of experi
 
 Current version: **0.4.1**. Step-by-step instructions are in [SOP.md](SOP.md).
 
+![QC overlays of one tray on days 1, 6, 11 and 16: pot grid, labels A1–E4 and one colored mask per plant, as seen from the chamber door](docs/img/overlay_series.png)
+
+*One tray followed through an experiment. Every image gets its own grid fit, so the camera can be raised as the plants grow; each pot's mask follows its plant through time.*
+
 ## Files
 
 | File | Purpose |
@@ -56,6 +60,8 @@ side: **A1 upper left, E4 lower right**; letters run left to right and numbers f
 toward the door. In the portrait array the pipeline works in, this is A1 bottom-right and E4
 top-left. `Roi_No` gives the matching vendor ROI number (A1 = 20, E4 = 1). QC overlays are
 drawn in the door view from version 0.4.1.
+
+![A single QC overlay: white column strip at the top, DOOR strip at the bottom, pots A1 (upper left) to E4 (lower right)](docs/img/overlay_example.png)
 
 The labels were checked two ways: they are the only orientation that matches the vendor ROI
 export pot by pot (r = 0.98, against ≤ 0.51 for the other three), and in a 28-tray treatment
@@ -127,6 +133,20 @@ the vendor software, using for every image the ROI set that matched its camera h
 
 Fq'/Fm' and qP read about 0.05 higher than the vendor values because the plant masks differ.
 rETR (Fq'/Fm' × a fixed light level) and qE/qI (frames not saved) are not computed.
+
+## Statistics and figures
+
+`analysis/treatment_vs_control.Rmd` compares each treatment level with its control at every
+imaging round (Welch's *t*-test, Cohen's *d*, Benjamini–Hochberg across levels) and on each
+plant's mean over the final days. It writes the result tables, an effect-size heatmap and one
+figure per series per trait: per-plant lines, mean ± SE ribbons, a −log10(p) strip and a
+Cohen's *d* strip.
+
+![Example time courses: well-watered against control plants for rosette area, Fv/Fm and the anthocyanin index](docs/img/example_timecourses.png)
+
+*Example output: well-watered plants (60% soil water holding capacity, purple) against the
+control at 20% (grey). Rosette area is the same at both watering levels, while Fv/Fm and the
+anthocyanin index differ for much of the experiment.*
 
 ## Running it
 
